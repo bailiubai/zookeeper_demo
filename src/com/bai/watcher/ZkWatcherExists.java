@@ -18,7 +18,8 @@ import java.util.concurrent.TimeUnit;
  */
 public class ZkWatcherExists {
 
-    String ip  = "172.20.10.11:2181";
+    //String ip  = "172.20.10.11:2181";
+    String ip  = "192.168.124.10:2181";
     ZooKeeper zooKeeper  = null;
 
     @Before

@@ -2456,3 +2456,113 @@ public class MyConfigCenter implements Watcher {
 
 ### 7.8、生成分布式唯一ID
 
+​	在过去的单裤单表系统中，通常可以使用数据库自带的auto_increment属性来自动为每一奥记录生成一个唯一的ID。但是分库分表后，就无法依靠数据库的auto_increment属性来唯一标识一条记录了。此时我们就可以用zookeeper在分布式环境中生成全局唯一ID。
+
+设计思路：
+
+1. 链接zookeeper服务器
+2. 指定路径生成临时有序节点
+3. 取序列号及为分布式环境下的唯一ID
+
+案例：
+
+```java
+package com.bai.watcher;
+
+import org.apache.zookeeper.*;
+
+import java.io.IOException;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
+
+public class GloballyUniqueId implements Watcher {
+
+    //zk的连接串
+    String IP = "192.168.124.10:2181";
+    //计数器对象
+    CountDownLatch countDownLatch = new CountDownLatch(1);
+    //用户生成序列号的节点
+    String defaultPath = "/uniqueId";
+    //连接对象
+    ZooKeeper zooKeeper ;
+
+
+    @Override
+    public void process(WatchedEvent event) {
+        try {
+            //捕获事件状态
+            if (event.getType() == Event.EventType.None){
+                if (event.getState() == Event.KeeperState.SyncConnected){
+                    System.out.println("连接成功！");
+                    countDownLatch.countDown();
+                }else if (event.getState() == Event.KeeperState.Disconnected){
+                    System.out.println("连接断开！");
+                }else if (event.getState() == Event.KeeperState.Expired){
+                    System.out.println("连接超时！");
+                    zooKeeper = new ZooKeeper(IP,6000,this);
+                }else if (event.getState() == Event.KeeperState.AuthFailed){
+                    System.out.println("认证失败！");
+                }
+            }
+        }catch (Exception e){
+            e.printStackTrace();
+        }
+    }
+
+
+    //构造方法
+    public GloballyUniqueId(){
+        try {
+            //打开连接
+            zooKeeper = new ZooKeeper(IP,5000,this);
+            //阻塞线程，等待链接的创建成功!
+            countDownLatch.await();
+        } catch (Exception e) {
+            e.printStackTrace();
+        }
+    }
+
+    public void close() throws InterruptedException {
+        zooKeeper.close();
+    }
+
+    //生成id的方法
+    public String getUniqueId(){
+        String path = "";
+        try {
+            //创建临时有序节点
+            path=zooKeeper.create(defaultPath,new byte[0], ZooDefs.Ids.OPEN_ACL_UNSAFE, CreateMode.EPHEMERAL_SEQUENTIAL);
+        } catch (KeeperException e) {
+            e.printStackTrace();
+        } catch (Exception e) {
+            e.printStackTrace();
+        }
+        return path.substring(9);
+    }
+
+    public static void main(String[] args) throws InterruptedException {
+        GloballyUniqueId globallyUniqueId = new GloballyUniqueId();
+        for (int i = 1 ; i<=5 ; i++){
+            String uniqueId = globallyUniqueId.getUniqueId();
+            System.out.println(uniqueId);
+        }
+        globallyUniqueId.close();
+        TimeUnit.SECONDS.sleep(10);
+    }
+}
+
+```
+
+### 7.9、分布式锁
+
+​	分布式锁有多种实现方式，比如通过数据库，redis都可以实现，作为分布式协同工具zookeeper，当然也有这标准的实现方式。下面介绍zookeeper中如何实现排他锁。
+
+设计思路：
+
+1. 每个客户端往/Locks下创建临时有序节点/Locks/Lock_,创建成功后/Lock下面会有每个客户端对应的节点，如：/Locks/Lock_000000001
+2. 客户端取得/Locks下子节点，并进行排序，判断排在最前面的是否为自己，如果自己的所节点在第一位，代表获取所成功
+3. 如果自己的锁节点不在第一位，则监听自己前一位的锁节点。例如：自己锁节点Lock_000002,那么则监听Lock_0000001
+4. 当前以为锁节点(Lock_00000001)对应的客户端执行完成，释放锁，将会触发监听客户端(Lock_00000002)的逻辑
+5. 监听客户端重新执行第2步逻辑，判断自己是否得到了锁。
+
+案例：
