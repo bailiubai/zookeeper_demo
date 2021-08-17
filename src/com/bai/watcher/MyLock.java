@@ -3,7 +3,8 @@ package com.bai.watcher;
 import org.apache.zookeeper.*;
 import org.apache.zookeeper.data.Stat;
 
-import java.io.IOException;
+import java.util.Collections;
+import java.util.List;
 import java.util.concurrent.CountDownLatch;
 
 public class MyLock{
@@ -51,7 +52,7 @@ public class MyLock{
     }
 
     //获取锁
-    public void acquiredLock(){
+    public void acquiredLock() throws Exception {
         //创建所节点
         createLock();
         //尝试获取锁
@@ -74,19 +75,51 @@ public class MyLock{
         } catch (InterruptedException e) {
             e.printStackTrace();
         }
-
-
     }
 
+    //监视器对象，监视上一个节点是否被删除
+    Watcher watcher = new Watcher() {
+        @Override
+        public void process(WatchedEvent watchedEvent) {
+            if (watchedEvent.getType() == Event.EventType.NodeDeleted){
+                synchronized (this){
+                    watcher.notify();
+                }
+            }
+        }
+    };
+
     //尝试获取锁
-    private void attemptLock() {
-
-
+    private void attemptLock() throws Exception{
+        //获取Locks节点下的所有子节点
+        List<String> children = zooKeeper.getChildren(LOCK_ROOT_PATH, false);
+        //对子节点进行排序
+        Collections.sort(children);
+        // /Locks/Lock_0000000000001
+        int index = children.indexOf(lockPath.substring(LOCK_ROOT_PATH.length()+1));
+        if (index == 0){
+            System.out.println("获取锁成功！！！！");
+            return;
+        }else{
+            //获取上一个节点的路径
+            String path = children.get(index-1);
+            Stat stat = zooKeeper.exists(LOCK_ROOT_PATH + "/" + path, watcher);
+            if (stat == null){
+                acquiredLock();
+            }else{
+                synchronized (watcher){
+                    watcher.wait();
+                }
+                attemptLock();
+            }
+        }
     }
 
     //释放锁
-    public void releaseLock(){
-
+    public void releaseLock() throws KeeperException, InterruptedException {
+        zooKeeper.delete(this.lockPath,-1);
+        zooKeeper.close();
+        System.out.println("锁以释放："+this.lockPath);
     }
 
     public static void main(String[] args) {

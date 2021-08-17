@@ -19,7 +19,7 @@ public class ZookeeperConnection {
             //arg1:服务器的ip和端口
             //arg2:客户端与服务器之间的会话超时时间，以毫秒为单位
             //arg3:监视器对象
-            ZooKeeper zooKeeper = new ZooKeeper("192.168.10.6:2181", 5000, new Watcher() {
+            ZooKeeper zooKeeper = new ZooKeeper("192.168.124.10.6:2181,192.168.124.10:2182,192.168.124.10:2183", 5000, new Watcher() {
                 @Override
                 public void process(WatchedEvent event) {
                     if (event.getState()==Event.KeeperState.SyncConnected){

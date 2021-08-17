@@ -2569,6 +2569,248 @@ public class GloballyUniqueId implements Watcher {
 
 案例：
 
+```java
+package com.bai.watcher;
+
+import org.apache.zookeeper.*;
+import org.apache.zookeeper.data.Stat;
+
+import java.util.Collections;
+import java.util.List;
+import java.util.concurrent.CountDownLatch;
+
+public class MyLock{
+
+    //zk的连接串
+    String IP = "192.168.124.10:2181";
+    //计数器对象
+    CountDownLatch countDownLatch = new CountDownLatch(1);
+    //连接对象
+    ZooKeeper zooKeeper ;
+    private static final String LOCK_ROOT_PATH="/Locks";
+    private static final String LOCK_NODE_NAME="Lock_";
+    private String lockPath;
+
+    //创建连接对象
+    public MyLock(){
+        try {
+            zooKeeper = new ZooKeeper(IP, 5000, new Watcher() {
+                @Override
+                public void process(WatchedEvent event) {
+                    try {
+                        //捕获事件状态
+                        if (event.getType() == Watcher.Event.EventType.None){
+                            if (event.getState() == Watcher.Event.KeeperState.SyncConnected){
+                                System.out.println("连接成功！");
+                                countDownLatch.countDown();
+                            }else if (event.getState() == Watcher.Event.KeeperState.Disconnected){
+                                System.out.println("连接断开！");
+                            }else if (event.getState() == Watcher.Event.KeeperState.Expired){
+                                System.out.println("连接超时！");
+                                zooKeeper = new ZooKeeper(IP,6000,this);
+                            }else if (event.getState() == Watcher.Event.KeeperState.AuthFailed){
+                                System.out.println("认证失败！");
+                            }
+                        }
+                    }catch (Exception e){
+                        e.printStackTrace();
+                    }
+                }
+            });
+            countDownLatch.await();
+        } catch (Exception e) {
+            e.printStackTrace();
+        }
+    }
+
+    //获取锁
+    public void acquiredLock() throws Exception {
+        //创建所节点
+        createLock();
+        //尝试获取锁
+        attemptLock();
+    }
+
+    //创建所节点
+    private void createLock() {
+        try {
+            //判断Locks是否存在，不存在创建
+            Stat stat = zooKeeper.exists(LOCK_ROOT_PATH, false);
+            if (null == stat){
+                zooKeeper.create(LOCK_ROOT_PATH,new byte[0], ZooDefs.Ids.OPEN_ACL_UNSAFE,CreateMode.PERSISTENT);
+            }
+            //创建临时有序节点
+            lockPath = zooKeeper.create(LOCK_ROOT_PATH+"/"+LOCK_NODE_NAME,new byte[0],ZooDefs.Ids.OPEN_ACL_UNSAFE,CreateMode.EPHEMERAL_SEQUENTIAL);
+            System.out.println("节点创建成功:"+lockPath);
+        } catch (KeeperException e) {
+            e.printStackTrace();
+        } catch (InterruptedException e) {
+            e.printStackTrace();
+        }
+    }
+
+    //监视器对象，监视上一个节点是否被删除
+    Watcher watcher = new Watcher() {
+        @Override
+        public void process(WatchedEvent watchedEvent) {
+            if (watchedEvent.getType() == Event.EventType.NodeDeleted){
+                synchronized (this){
+                    watcher.notify();
+                }
+            }
+        }
+    };
+
+    //尝试获取锁
+    private void attemptLock() throws Exception{
+        //获取Locks节点下的所有子节点
+        List<String> children = zooKeeper.getChildren(LOCK_ROOT_PATH, false);
+        //对子节点进行排序
+        Collections.sort(children);
+        // /Locks/Lock_0000000000001
+        int index = children.indexOf(lockPath.substring(LOCK_ROOT_PATH.length()+1));
+        if (index == 0){
+            System.out.println("获取锁成功！！！！");
+            return;
+        }else{
+            //获取上一个节点的路径
+            String path = children.get(index-1);
+            Stat stat = zooKeeper.exists(LOCK_ROOT_PATH + "/" + path, watcher);
+            if (stat == null){
+                acquiredLock();
+            }else{
+                synchronized (watcher){
+                    watcher.wait();
+                }
+                attemptLock();
+            }
+        }
+    }
+
+    //释放锁
+    public void releaseLock() throws KeeperException, InterruptedException {
+        zooKeeper.delete(this.lockPath,-1);
+        zooKeeper.close();
+        System.out.println("锁以释放："+this.lockPath);
+    }
+
+    public static void main(String[] args) {
+        MyLock lock = new MyLock();
+        lock.createLock();
+    }
+
+}
+
+
+
+package com.bai.example;
+
+import com.bai.watcher.MyLock;
+
+public class TicketSeller {
+
+    private static int count = 10;
+
+
+    private void sell(){
+        if (count>0){
+            System.out.println("售票开始");
+            //线程堆积休眠数毫秒，模拟现实中的费是操作
+            int sleepMillis = 100;
+            try {
+                Thread.sleep(sleepMillis);
+            } catch (InterruptedException e) {
+                e.printStackTrace();
+            }
+            System.out.println("售票结束！"+Thread.currentThread().getName()+"获取到第票："+count);
+            count--;
+        }else{
+            System.out.println(Thread.currentThread().getName()+"票已售完");
+            Thread.currentThread().interrupted();
+        }
+    }
+
+    public void sellTicketWithLock() throws Exception {
+        MyLock lock = new MyLock();
+        //获取锁
+        lock.acquiredLock();
+        sell();
+        //释放锁
+        lock.releaseLock();
+    }
+
+
+    public static void main(String[] args) {
+        TicketSeller seller = new TicketSeller();
+        new Thread(()->{
+            for (int i = 1 ; i<=10 ; i++){
+                System.out.println(Thread.currentThread().getName()+":"+i);
+                if (Thread.currentThread().isInterrupted()){
+                    break;
+                }
+                try {
+                    seller.sellTicketWithLock();
+                } catch (Exception e) {
+                    e.printStackTrace();
+                }
+            }
+        },"A").start();
+        new Thread(()->{
+            for (int i = 1 ; i<=10 ; i++){
+                if (Thread.currentThread().isInterrupted()){
+                    break;
+                }
+                try {
+                    seller.sellTicketWithLock();
+                } catch (Exception e) {
+                    e.printStackTrace();
+                }
+            }
+        },"B").start();
+        new Thread(()->{
+            for (int i = 1 ; i<=10 ; i++){
+                if (Thread.currentThread().isInterrupted()){
+                    break;
+                }
+                try {
+                    seller.sellTicketWithLock();
+                } catch (Exception e) {
+                    e.printStackTrace();
+                }
+            }
+        },"C").start();
+        new Thread(()->{
+            for (int i = 1 ; i<=10 ; i++){
+                if (Thread.currentThread().isInterrupted()){
+                    break;
+                }
+                try {
+                    seller.sellTicketWithLock();
+                } catch (Exception e) {
+                    e.printStackTrace();
+                }
+            }
+        },"D").start();
+        new Thread(()->{
+            for (int i = 1 ; i<=10 ; i++){
+                if (Thread.currentThread().isInterrupted()){
+                    break;
+                }
+                try {
+                    seller.sellTicketWithLock();
+                } catch (Exception e) {
+                    e.printStackTrace();
+                }
+            }
+        },"E").start();
+    }
+
+}
+
+```
+
+
+
 
 ## 8、zookeeper集群搭建
 
@@ -2596,8 +2838,8 @@ public class GloballyUniqueId implements Watcher {
    	#C:Zookeeper服务器之间的通信端口
    	#D:Leader选举的端口
    server.1=192.168.60.130:2287:3387
-   server.1=192.168.60.130:2288:3388
-   server.1=192.168.60.130:2289:3389
+   server.2=192.168.60.130:2288:3388
+   server.3=192.168.60.130:2289:3389
    ```
 
 3. 在上一步dataDir指定的目录下，创建myid文件，然后在该文件中添加上一步server配置的对应A数字。
@@ -2623,4 +2865,193 @@ public class GloballyUniqueId implements Watcher {
 
 
 ## 9、一致性协议：zab协议
+
+​	zab协议全程是Zookeeper Atomic Broadcast(zookeeper原子广播)。zookeeper是通过zab协议来保证分布式事务的最终一致性
+
+​	基于zab协议，zookeeper集群中的角色主要有以下三类，如下表所示：
+
+​	![](D:\project_java\my_project\demo\zookeeper_demo\zookeeper\image\qq202108171055.png)
+
+​	zab广播模式工作原理，通过类似两阶段提交协议的方式解决数据一致性：
+
+​		![](D:\project_java\my_project\demo\zookeeper_demo\zookeeper\image\qq202108171058.png)
+
+1. ​	leader从客户端收到一个请求
+2. leader生成一个新的事物并为这个事务生成一个唯一的ZXID
+3. leader将这个事务提议(propose)发送给所有的follows节点
+4. follower节点将收到的事务请求加入到历史队列(history queue)中，并发送ack给leader
+5. 当leader收到大多数follower（半数以上节点）的ack消息，leader会发送commit请求
+6. 当follwer收到commit请求时，从历史队列中将事务请求commit；
+
+
+
+## 10、zookeeper的leader选举
+
+### 10.1、服务器状态
+
+​	looking:寻找leader状态。当服务器处于该状态时，他会认为当前集群中没有leader，因此需要进入leader选举状态
+
+​	leading:领导者状态。表明当前服务器角色是leader
+
+​	following:更随着状态，表明当前服务器角色是follower
+
+​	observing:观察者状态。表明当前服务器角色是observer
+
+### 10.2、服务器启动时的leader选举
+
+​	在集群初始化阶段，当有一天服务器server1启动时，其他单独无法进行和完成leader选举，当第二台服务器server2启动时，此时两台服务器可以互相通信，每台机器都试图找到leader，于是进行leader选举过程。选举过程如下：
+
+1. 每个server发出一个投票，由于是初始情况，server1和server2都会将自己作为leader服务器进行投票，每次投票包含所推举的服务器的myid和zxid，使用（myid，zxid）来表示，此时server1的投票为（1，0），server2的投票为（2，0），然后各自将这个投票发给集群中其他机器。
+
+2. 集群中的每台服务器接受来自集群中各个服务器的投票
+
+3. 处理投票。针对每一个投票服务器都需要将别人的投票和自己的投票进行pk，pk规则如下
+
+   - 优先检查zxid，zxid比较大的服务器有限作为leader。
+
+   - 如果zxid相同，那么就比较myid，myid比较大的服务器作为leader
+
+     对于Server1而言，他的投票是（1，0）接收Server2的投票为（2，0），首先比较两者的zxid，均为0，在比较myid，此时的server2的myid比最大，于是更新自己的投票为（2，0），然后重新投票，对于server2而言，其无需更新自己的投票，只是再次向集群中所有机器发出上一次投票信息即可。
+
+4. 统计票数。每次投票后，服务器都会统计投票信息，判断是否已经有过半机器的投票信息，对于server1、server2而言，都统计处集群中已经有两台机器接受了（2，0）的投票信息，此时便认为已经选举出leader
+
+5. 改变服务器状态，一旦确定leader，每个服务器都会更新自己的状态，如果是follower，那么就变更为following，如果是leader，就变更为leading。
+
+### 10.2、服务器运行时期的leader选举
+
+​	在zookeeper运行期间，leader与非leader各司其职，即便当有非leader服务器宕机或加入，此时也不会影响leader，但是一旦leader服务器挂掉，那么整个集群将暂停服务，进入新一轮的leader选举，其过程和启动时期的leader选举过程基本一致。
+
+​	加入正在运行的有server1、server2、server3三台服务器，当前leader是server2，如某一时刻leader挂掉了，此时便开始leader选举，选举过程如下：
+
+1. 变更状态。leader挂后，余下的服务器都会将自己的服务器状态变更为looking，然后开始进入leader选举过程
+2. 每个server都会发出一个投票，在运行期间，每个服务器上的zxid可能不同，如此假设server1的zxid为122，server3的zxid为122，在第一轮投票中，server1和server3都会投自己，产生（1，122），（3，122），然后各自将投票发给集群中所有机器。
+3. 接受来自各个服务器的投票，与启动时过程相同
+4. 处理投票。与启动时过程相同，此时server3将会成为leader
+5. 统计投票，与启动过程相同
+6. 改变服务器状态，与启动时过程相同
+
+## 11、observer角色机器配置
+
+​	observer角色特点：
+
+1. 不参与集群的leader选举
+
+2. 不参与集群中写数据的ack反馈
+
+   为了使用observer角色，在任何想变成observer角色的配置文件中加入如下配置
+
+   ```shell
+   peerType=observer
+   ```
+
+   并在所有server的配置文件中，配置observer模式的server的那行配置追加observer，例如：
+
+   ```shell
+   server.3=192.168.124.10:2289:3389:observer
+   ```
+
+## 12、zookeeper Api连接集群 
+
+```java
+ZooKeeper(String connectionString,int sessionTimeout,Watcher watcher)
+```
+
+- connectionString - zookeeper集合主机。
+- sessionTimeout - 会话超时（一毫秒为单位）
+- watcher - 实现“监控器”界面的对象。zookeeper集合通过监视器对象返回链接状态。
+
+案例：
+
+
+
+## 13、zookeeper开源客户端curator介绍
+
+- zookeeper开源客户端curator介绍
+- zookeeper四字监控命令
+- zookeeper图形化的客户端工具（zooinspector）
+- taokeeper监控工具的使用
+
+### 13.1、zookeeper开源客户端curator介绍
+
+#### 13.1.1. curator简介
+
+​	curator是Netflix公司开源的一个zookeeper客户端，后捐献给apache，curator框架在zookeeper原生api接口上进行了包装，解决了很多zookeeper客户端底层的细节开发。提供zookeeper各种应用场景（比如：分布式锁，集群领导选举，共享计数器，缓存机制，分布式队列等）的抽象封装，实现了Fluent风格的API接口，是最好用，最流行的zookeeper的客户端。
+
+​	原生zookeeperAPI的不足
+
+- 连接对象异步创建，需要开发人员自行编码等待
+
+- 链接没有自动重连超时机制
+
+- watcher一次注册生肖一次
+
+- 不支持递归创建树节点
+
+  curator特点：
+
+- 解决session绘画超市重连
+
+- watcher反复注册
+
+- 简化开发api
+
+- 遵循fluent风格api
+
+- 提供了分布式锁服务、共享计数器、缓存机制等机制
+
+**maven依赖**
+
+```xml
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
+    <modelVersion>4.0.0</modelVersion>
+
+    <groupId>com.bai</groupId>
+    <artifactId>zookeeper-curator</artifactId>
+    <version>1.0-SNAPSHOT</version>
+
+
+    <dependencies>
+
+        <dependency>
+            <groupId>junit</groupId>
+            <artifactId>junit</artifactId>
+            <version>4.7</version>
+            <scope>test</scope>
+        </dependency>
+
+        <dependency>
+            <groupId>org.apache.curator</groupId>
+            <artifactId>curator-framework</artifactId>
+            <version>2.6.0</version>
+            <type>jar</type>
+            <exclusions>
+                <exclusion>
+                    <groupId>org.apache.zookeeper</groupId>
+                    <artifactId>zookeeper</artifactId>
+                </exclusion>
+            </exclusions>
+        </dependency>
+
+        <dependency>
+            <groupId>org.apache.zookeeper</groupId>
+            <artifactId>zookeeper</artifactId>
+            <version>3.4.10</version>
+        </dependency>
+
+        <dependency>
+            <groupId>org.apache.curator</groupId>
+            <artifactId>curator-recipes</artifactId>
+            <version>2.6.0</version>
+            <type>jar</type>
+        </dependency>
+
+    </dependencies>
+
+</project>
+```
+
+#### 13.1.2. 连接到zookeeper
 
