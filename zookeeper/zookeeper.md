@@ -2,6 +2,8 @@
 
 
 
+
+
 # zookeeper
 
 
@@ -2455,4 +2457,60 @@ public class MyConfigCenter implements Watcher {
 ```
 
 ### 7.8、生成分布式唯一ID
+
+
+
+## 8、zookeeper集群搭建
+
+​	单机环境下，jdk、zookeeper安装完毕，集于一台虚拟机，进行zookeeper伪集群搭建，zookeeper集群中包含3个节点，节点对外提供服务端口号分别为2181，2182，2183
+
+1. 基于zookeeper-3.4.10复制3份zookeeper安装好的服务器文件，目录名称分别为zookeeper2181、zookeeper2182、zookeeper2183
+
+   ```shell
+   cp -r zookeeper-3.4.10 zookeeper2181
+   cp -r zookeeper-3.4.10 zookeeper2182
+   cp -r zookeeper-3.4.10 zookeeper2183
+   ```
+
+2. 修改zookeeper2181服务器对应配置文件。
+
+   ```shell
+   #服务器对应端口号
+   clientPort=2181
+   #数据快照文件所在路径
+   dataDir=/home/zookeeper/zookeeper2181/data
+   #集群配置信息
+   	#server.A=B:C:D
+   	#A:是一个数字，表示这个服务器的编号
+   	#B:是这个服务器的ip地址
+   	#C:Zookeeper服务器之间的通信端口
+   	#D:Leader选举的端口
+   server.1=192.168.60.130:2287:3387
+   server.1=192.168.60.130:2288:3388
+   server.1=192.168.60.130:2289:3389
+   ```
+
+3. 在上一步dataDir指定的目录下，创建myid文件，然后在该文件中添加上一步server配置的对应A数字。
+
+   ```shell
+   #zookeeper2181对应的数字为1
+   #/home/zookeeper/zookeeper2181/data目录下
+   echo "1" > myid
+   ```
+
+4. zookeeper2181、zookeeper2183参照步骤2/3进行相应配置
+
+5. 分别启动三台服务器，检测集群状态
+
+   登录命令：
+
+   ```shell
+   ./zkCli.sh -server 192.168.60.130:2181
+   ./zkCli.sh -server 192.168.60.130:2182
+   ./zkCli.sh -server 192.168.60.130:2183
+   ```
+
+
+
+## 9、一致性协议：zab协议
 
